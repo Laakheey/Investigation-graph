@@ -1,13 +1,10 @@
 // =============================================================================
-// API/Controller Layer — /api/graph/edge (Artifact 4 — Edge Management Endpoint)
-// -----------------------------------------------------------------------------
-// SOLID:
-// - Single Responsibility Principle (SRP): Handles Auth0 session extraction,
-//   Zod schema validation, and standardized HTTP response formatting.
+// API/Controller Layer — /api/graph/edge (POST, PUT, DELETE)
+// Guarded with strict Auth0 authentication requirements.
 // =============================================================================
 
 import { NextRequest, NextResponse } from "next/server";
-import { getAuthContext, UnauthorizedError, ForbiddenError } from "@/lib/auth";
+import { getAuthenticatedUserOrGuest, requireAuthenticatedUser, UnauthorizedError, ForbiddenError } from "@/lib/auth";
 import { CreateEdgeSchema, UpdateEdgeSchema } from "@/types/api";
 import { graphServiceSingleton } from "@/services/graphService";
 import type { ApiResponse } from "@/types/api";
@@ -17,10 +14,9 @@ export async function POST(
   req: NextRequest,
 ): Promise<NextResponse<ApiResponse<GraphEdge>>> {
   try {
-    // 1. Auth0 Session & Tenant Context Verification
-    const auth = await getAuthContext(req);
+    const auth = await getAuthenticatedUserOrGuest(req);
+    requireAuthenticatedUser(auth);
 
-    // 2. Request Payload Validation with Zod
     const body = await req.json();
     const parsed = CreateEdgeSchema.safeParse(body);
     if (!parsed.success) {
@@ -29,7 +25,7 @@ export async function POST(
           success: false,
           error: {
             code: "BAD_REQUEST",
-            message: "Invalid edge creation payload",
+            message: "Invalid edge payload",
             details: parsed.error.flatten(),
           },
         },
@@ -37,37 +33,27 @@ export async function POST(
       );
     }
 
-    if (parsed.data.sourceId === parsed.data.targetId) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: {
-            code: "BAD_REQUEST",
-            message: "Source and Target nodes must be distinct",
-          },
-        },
-        { status: 400 },
-      );
-    }
-
-    // 3. Delegate to Business Service Layer
     const created = await graphServiceSingleton.createEdge(
       auth.tenantId,
       parsed.data,
+      auth.userId,
+      auth.name,
     );
 
     return NextResponse.json({ success: true, data: created }, { status: 201 });
   } catch (err: any) {
     if (err instanceof UnauthorizedError) {
       return NextResponse.json(
-        {
-          success: false,
-          error: { code: "UNAUTHORIZED", message: err.message },
-        },
+        { success: false, error: { code: err.code || "AUTH_REQUIRED", message: err.message } },
         { status: 401 },
       );
     }
-    console.error("[/api/graph/edge POST] Error:", err);
+    if (err instanceof ForbiddenError) {
+      return NextResponse.json(
+        { success: false, error: { code: err.code || "FORBIDDEN", message: err.message } },
+        { status: 403 },
+      );
+    }
     return NextResponse.json(
       {
         success: false,
@@ -80,23 +66,28 @@ export async function POST(
 
 export async function PUT(
   req: NextRequest,
-): Promise<NextResponse<ApiResponse<GraphEdge>>> {
+): Promise<NextResponse<ApiResponse<{ edge: GraphEdge; hasConflict: boolean }>>> {
   try {
-    const auth = await getAuthContext(req);
-    const body = await req.json();
+    const auth = await getAuthenticatedUserOrGuest(req);
+    requireAuthenticatedUser(auth);
 
-    const relId = req.nextUrl.searchParams.get("relId") || body.relId;
-    if (!relId) {
+    const body = await req.json();
+    const { relId, ...rest } = body;
+
+    if (!relId || typeof relId !== "string") {
       return NextResponse.json(
         {
           success: false,
-          error: { code: "BAD_REQUEST", message: "Missing relId parameter" },
+          error: {
+            code: "BAD_REQUEST",
+            message: "Missing required relationship relId",
+          },
         },
         { status: 400 },
       );
     }
 
-    const parsed = UpdateEdgeSchema.safeParse(body);
+    const parsed = UpdateEdgeSchema.safeParse(rest);
     if (!parsed.success) {
       return NextResponse.json(
         {
@@ -111,25 +102,29 @@ export async function PUT(
       );
     }
 
-    const updated = await graphServiceSingleton.updateEdge(
+    const result = await graphServiceSingleton.updateEdge(
       auth.tenantId,
       parsed.data.workspaceId,
       relId,
       parsed.data,
+      auth.userId,
+      auth.name,
     );
 
-    return NextResponse.json({ success: true, data: updated }, { status: 200 });
+    return NextResponse.json({ success: true, data: result }, { status: 200 });
   } catch (err: any) {
     if (err instanceof UnauthorizedError) {
       return NextResponse.json(
-        {
-          success: false,
-          error: { code: "UNAUTHORIZED", message: err.message },
-        },
+        { success: false, error: { code: err.code || "AUTH_REQUIRED", message: err.message } },
         { status: 401 },
       );
     }
-    console.error("[/api/graph/edge PUT] Error:", err);
+    if (err instanceof ForbiddenError) {
+      return NextResponse.json(
+        { success: false, error: { code: err.code || "FORBIDDEN", message: err.message } },
+        { status: 403 },
+      );
+    }
     return NextResponse.json(
       {
         success: false,
@@ -144,9 +139,11 @@ export async function DELETE(
   req: NextRequest,
 ): Promise<NextResponse<ApiResponse<{ deleted: boolean }>>> {
   try {
-    const auth = await getAuthContext(req);
-    const relId = req.nextUrl.searchParams.get("relId");
-    const workspaceId = req.nextUrl.searchParams.get("workspaceId");
+    const auth = await getAuthenticatedUserOrGuest(req);
+    requireAuthenticatedUser(auth);
+
+    const body = await req.json();
+    const { relId, workspaceId } = body;
 
     if (!relId || !workspaceId) {
       return NextResponse.json(
@@ -165,19 +162,22 @@ export async function DELETE(
       auth.tenantId,
       workspaceId,
       relId,
+      auth.userId,
+      auth.name,
     );
-    return NextResponse.json(
-      { success: true, data: { deleted } },
-      { status: 200 },
-    );
+
+    return NextResponse.json({ success: true, data: { deleted } }, { status: 200 });
   } catch (err: any) {
     if (err instanceof UnauthorizedError) {
       return NextResponse.json(
-        {
-          success: false,
-          error: { code: "UNAUTHORIZED", message: err.message },
-        },
+        { success: false, error: { code: err.code || "AUTH_REQUIRED", message: err.message } },
         { status: 401 },
+      );
+    }
+    if (err instanceof ForbiddenError) {
+      return NextResponse.json(
+        { success: false, error: { code: err.code || "FORBIDDEN", message: err.message } },
+        { status: 403 },
       );
     }
     return NextResponse.json(

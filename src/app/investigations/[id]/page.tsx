@@ -4,7 +4,7 @@
 // EBRR Investigation Matter Canvas Page — /investigations/[id]
 // -----------------------------------------------------------------------------
 // Production-grade Investigation Workbench powered by @xyflow/react GraphCanvas,
-// Neo4j multi-tenant persistence, and Redis cache invalidation.
+// Neo4j multi-tenant persistence, RBAC permission evaluation, and Redis cache.
 // =============================================================================
 
 import React, { useEffect, useState, useCallback } from "react";
@@ -13,6 +13,7 @@ import Link from "next/link";
 import { GraphCanvas } from "@/components/graph/GraphCanvas";
 import TopNavigation from "@/components/investigations/TopNavigation";
 import { Button } from "@/components/ui/button";
+import { useAuth } from "@/components/auth/AuthProvider";
 import {
   ArrowLeft,
   RefreshCw,
@@ -22,23 +23,25 @@ import {
   SlidersHorizontal,
   Info,
   ChevronRight,
+  Eye,
+  Users,
 } from "lucide-react";
 import type {
   ReactFlowNodeData,
   ReactFlowEdgeData,
 } from "@/services/graphService";
-import type { Investigation } from "@/types/domain";
+import type { Investigation, WorkspacePermissions } from "@/types/domain";
 
 export default function InvestigationMatterPage() {
   const params = useParams();
   const router = useRouter();
   const id = String(params?.id || "");
+  const { user, isGuest } = useAuth();
 
-  const [investigation, setInvestigation] = useState<Investigation | null>(
-    null,
-  );
+  const [investigation, setInvestigation] = useState<Investigation | null>(null);
   const [nodes, setNodes] = useState<ReactFlowNodeData[]>([]);
   const [edges, setEdges] = useState<ReactFlowEdgeData[]>([]);
+  const [permissions, setPermissions] = useState<WorkspacePermissions | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -54,10 +57,9 @@ export default function InvestigationMatterPage() {
       if (invJson.success && invJson.data) {
         setInvestigation(invJson.data);
       } else {
-        // Fallback default meta
         setInvestigation({
           id,
-          tenantId: "tenant-alpha-compliance",
+          tenantId: user?.tenantId || "tenant-alpha-compliance",
           name: "Active Investigation Matter",
           title: "Active Investigation Matter",
           description: "Evidence-Based Responsibility Reconstruction™ Case",
@@ -68,7 +70,18 @@ export default function InvestigationMatterPage() {
         });
       }
 
-      // 2. Fetch React Flow Visual Payload (Redis Cached + Neo4j fallback)
+      // 2. Fetch Workspace Members & Permissions
+      try {
+        const memRes = await fetch(`/api/investigations/${id}/members`);
+        const memJson = await memRes.json();
+        if (memJson.success && memJson.data?.permissions) {
+          setPermissions(memJson.data.permissions);
+        }
+      } catch {
+        // Ignored in guest fallback
+      }
+
+      // 3. Fetch React Flow Visual Payload (Redis Cached + Neo4j fallback)
       const graphRes = await fetch(`/api/graph/${id}`);
       const graphJson = await graphRes.json();
 
@@ -82,7 +95,7 @@ export default function InvestigationMatterPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [id]);
+  }, [id, user?.tenantId]);
 
   useEffect(() => {
     fetchGraphData();
@@ -184,6 +197,9 @@ export default function InvestigationMatterPage() {
           initialEdges={edges}
           investigationTitle={investigation?.title}
           investigationStatus={investigation?.status}
+          isGuest={isGuest}
+          userRole={permissions?.role || user?.role || (isGuest ? "GUEST_VIEWER" : "OWNER")}
+          userPermissions={permissions || undefined}
           onRefresh={fetchGraphData}
         />
       </div>

@@ -35,6 +35,8 @@ export interface IGraphRepository {
     },
   ): Promise<GraphNode>;
 
+  getNodeById(tenantId: string, nodeId: string): Promise<GraphNode | null>;
+
   updateNode(
     tenantId: string,
     nodeId: string,
@@ -47,6 +49,10 @@ export interface IGraphRepository {
       description: string;
       position: { x: number; y: number };
       properties: Record<string, string | number | boolean>;
+      updatedBy: string;
+      version: number;
+      hasConflict: boolean;
+      conflictedFields: any;
     }>,
   ): Promise<GraphNode>;
 
@@ -54,6 +60,7 @@ export interface IGraphRepository {
     tenantId: string,
     nodeId: string,
     position: { x: number; y: number },
+    updatedBy?: string,
   ): Promise<void>;
 
   deleteNode(tenantId: string, nodeId: string): Promise<boolean>;
@@ -71,8 +78,11 @@ export interface IGraphRepository {
       strokeColor?: string;
       weight?: number;
       properties?: Record<string, string | number | boolean>;
+      createdBy?: string;
     },
   ): Promise<GraphEdge>;
+
+  getEdgeById(tenantId: string, relId: string): Promise<GraphEdge | null>;
 
   updateEdge(
     tenantId: string,
@@ -85,6 +95,10 @@ export interface IGraphRepository {
       strokeColor: string;
       weight: number;
       properties: Record<string, string | number | boolean>;
+      updatedBy: string;
+      version: number;
+      hasConflict: boolean;
+      conflictedFields: any;
     }>,
   ): Promise<GraphEdge>;
 
@@ -135,6 +149,8 @@ export class Neo4jGraphRepository implements IGraphRepository {
       createdAt: now,
       updatedAt: now,
       createdBy: userId,
+      version: 1,
+      hasConflict: false,
     };
 
     memoryNodes.set(`${tenantId}:${id}`, nodeRecord);
@@ -144,7 +160,7 @@ export class Neo4jGraphRepository implements IGraphRepository {
         const result = await session.executeWrite((tx) =>
           tx.run(
             `
-            MATCH (w:Workspace { tenantId: $tenantId, id: $workspaceId })
+            MERGE (w:Investigation { tenantId: $tenantId, id: $workspaceId })
             CREATE (n:Node {
               id: $id,
               tenantId: $tenantId,
@@ -160,7 +176,9 @@ export class Neo4jGraphRepository implements IGraphRepository {
               properties: $properties,
               createdAt: $now,
               updatedAt: $now,
-              createdBy: $userId
+              createdBy: $userId,
+              version: 1,
+              hasConflict: false
             })
             MERGE (w)-[:CONTAINS]->(n)
             RETURN n
@@ -195,6 +213,8 @@ export class Neo4jGraphRepository implements IGraphRepository {
             x: Number(raw.posX ?? position.x),
             y: Number(raw.posY ?? position.y),
           },
+          version: Number(raw.version ?? 1),
+          hasConflict: Boolean(raw.hasConflict),
         } as GraphNode;
       });
     } catch (err) {
@@ -203,6 +223,42 @@ export class Neo4jGraphRepository implements IGraphRepository {
         (err as Error).message,
       );
       return nodeRecord;
+    }
+  }
+
+  async getNodeById(tenantId: string, nodeId: string): Promise<GraphNode | null> {
+    const memKey = `${tenantId}:${nodeId}`;
+    if (memoryNodes.has(memKey)) {
+      return memoryNodes.get(memKey) || null;
+    }
+
+    try {
+      return await withSession(async (session) => {
+        const result = await session.executeRead((tx) =>
+          tx.run(
+            `
+            MATCH (n:Node { tenantId: $tenantId, id: $nodeId })
+            RETURN n
+            `,
+            { tenantId, nodeId },
+          ),
+        );
+
+        if (result.records.length === 0) return null;
+        const raw = result.records[0].get("n").properties;
+        return {
+          ...raw,
+          position: {
+            x: Number(raw.posX ?? 250),
+            y: Number(raw.posY ?? 150),
+          },
+          version: Number(raw.version ?? 1),
+          hasConflict: Boolean(raw.hasConflict),
+          conflictedFields: raw.conflictedFields ? (typeof raw.conflictedFields === "string" ? JSON.parse(raw.conflictedFields) : raw.conflictedFields) : undefined,
+        } as GraphNode;
+      });
+    } catch {
+      return null;
     }
   }
 
@@ -218,11 +274,16 @@ export class Neo4jGraphRepository implements IGraphRepository {
       description: string;
       position: { x: number; y: number };
       properties: Record<string, string | number | boolean>;
+      updatedBy: string;
+      version: number;
+      hasConflict: boolean;
+      conflictedFields: any;
     }>,
   ): Promise<GraphNode> {
     const memKey = `${tenantId}:${nodeId}`;
     const existing = memoryNodes.get(memKey);
     const now = new Date().toISOString();
+    const newVersion = (existing?.version ?? 1) + 1;
 
     if (existing) {
       const updated: GraphNode = {
@@ -239,6 +300,10 @@ export class Neo4jGraphRepository implements IGraphRepository {
         position: updates.position ?? existing.position,
         properties: updates.properties ?? existing.properties,
         updatedAt: now,
+        updatedBy: updates.updatedBy ?? existing.updatedBy,
+        version: updates.version ?? newVersion,
+        hasConflict: updates.hasConflict ?? existing.hasConflict ?? false,
+        conflictedFields: updates.conflictedFields ?? existing.conflictedFields,
       };
       memoryNodes.set(memKey, updated);
     }
@@ -259,7 +324,11 @@ export class Neo4jGraphRepository implements IGraphRepository {
               n.posX = COALESCE($posX, n.posX),
               n.posY = COALESCE($posY, n.posY),
               n.properties = COALESCE($properties, n.properties),
-              n.updatedAt = $now
+              n.updatedAt = $now,
+              n.updatedBy = COALESCE($updatedBy, n.updatedBy),
+              n.version = coalesce(n.version, 1) + 1,
+              n.hasConflict = COALESCE($hasConflict, n.hasConflict, false),
+              n.conflictedFields = COALESCE($conflictedFields, n.conflictedFields)
             RETURN n
             `,
             {
@@ -274,6 +343,9 @@ export class Neo4jGraphRepository implements IGraphRepository {
               posX: updates.position?.x ?? null,
               posY: updates.position?.y ?? null,
               properties: updates.properties ?? null,
+              updatedBy: updates.updatedBy || null,
+              hasConflict: updates.hasConflict !== undefined ? updates.hasConflict : null,
+              conflictedFields: updates.conflictedFields ? JSON.stringify(updates.conflictedFields) : null,
               now,
             },
           ),
@@ -288,6 +360,9 @@ export class Neo4jGraphRepository implements IGraphRepository {
         return {
           ...raw,
           position: { x: Number(raw.posX ?? 0), y: Number(raw.posY ?? 0) },
+          version: Number(raw.version ?? newVersion),
+          hasConflict: Boolean(raw.hasConflict),
+          conflictedFields: raw.conflictedFields ? (typeof raw.conflictedFields === "string" ? JSON.parse(raw.conflictedFields) : raw.conflictedFields) : undefined,
         } as GraphNode;
       });
     } catch (err) {
@@ -300,12 +375,15 @@ export class Neo4jGraphRepository implements IGraphRepository {
     tenantId: string,
     nodeId: string,
     position: { x: number; y: number },
+    updatedBy?: string,
   ): Promise<void> {
     const memKey = `${tenantId}:${nodeId}`;
     const existing = memoryNodes.get(memKey);
+    const now = new Date().toISOString();
     if (existing) {
       existing.position = position;
-      existing.updatedAt = new Date().toISOString();
+      existing.updatedAt = now;
+      if (updatedBy) existing.updatedBy = updatedBy;
     }
 
     try {
@@ -314,14 +392,15 @@ export class Neo4jGraphRepository implements IGraphRepository {
           tx.run(
             `
             MATCH (n:Node { tenantId: $tenantId, id: $nodeId })
-            SET n.posX = $posX, n.posY = $posY, n.updatedAt = $now
+            SET n.posX = $posX, n.posY = $posY, n.updatedAt = $now, n.updatedBy = coalesce($updatedBy, n.updatedBy)
             `,
             {
               tenantId,
               nodeId,
               posX: position.x,
               posY: position.y,
-              now: new Date().toISOString(),
+              updatedBy: updatedBy || null,
+              now,
             },
           ),
         );
@@ -375,6 +454,7 @@ export class Neo4jGraphRepository implements IGraphRepository {
       strokeColor?: string;
       weight?: number;
       properties?: Record<string, string | number | boolean>;
+      createdBy?: string;
     },
   ): Promise<GraphEdge> {
     const relId = randomUUID();
@@ -397,6 +477,9 @@ export class Neo4jGraphRepository implements IGraphRepository {
       properties: payload.properties || {},
       createdAt: now,
       updatedAt: now,
+      createdBy: payload.createdBy,
+      version: 1,
+      hasConflict: false,
     };
 
     memoryEdges.set(`${tenantId}:${relId}`, edgeRecord);
@@ -423,7 +506,10 @@ export class Neo4jGraphRepository implements IGraphRepository {
               weight: $weight,
               properties: $properties,
               createdAt: $now,
-              updatedAt: $now
+              updatedAt: $now,
+              createdBy: $createdBy,
+              version: 1,
+              hasConflict: false
             }]->(target)
             RETURN r
             `,
@@ -441,6 +527,7 @@ export class Neo4jGraphRepository implements IGraphRepository {
               strokeColor: payload.strokeColor || "#2563EB",
               weight: payload.weight ?? 1.5,
               properties: payload.properties || {},
+              createdBy: payload.createdBy || null,
               now,
             },
           ),
@@ -450,10 +537,46 @@ export class Neo4jGraphRepository implements IGraphRepository {
           return edgeRecord;
         }
 
-        return result.records[0].get("r").properties as GraphEdge;
+        const raw = result.records[0].get("r").properties;
+        return {
+          ...raw,
+          version: Number(raw.version ?? 1),
+          hasConflict: Boolean(raw.hasConflict),
+        } as GraphEdge;
       });
     } catch {
       return edgeRecord;
+    }
+  }
+
+  async getEdgeById(tenantId: string, relId: string): Promise<GraphEdge | null> {
+    const memKey = `${tenantId}:${relId}`;
+    if (memoryEdges.has(memKey)) {
+      return memoryEdges.get(memKey) || null;
+    }
+
+    try {
+      return await withSession(async (session) => {
+        const result = await session.executeRead((tx) =>
+          tx.run(
+            `
+            MATCH ()-[r:RELATES_TO { tenantId: $tenantId, relId: $relId }]->()
+            RETURN r
+            `,
+            { tenantId, relId },
+          ),
+        );
+
+        if (result.records.length === 0) return null;
+        const raw = result.records[0].get("r").properties;
+        return {
+          ...raw,
+          version: Number(raw.version ?? 1),
+          hasConflict: Boolean(raw.hasConflict),
+        } as GraphEdge;
+      });
+    } catch {
+      return null;
     }
   }
 
@@ -468,11 +591,16 @@ export class Neo4jGraphRepository implements IGraphRepository {
       strokeColor: string;
       weight: number;
       properties: Record<string, string | number | boolean>;
+      updatedBy: string;
+      version: number;
+      hasConflict: boolean;
+      conflictedFields: any;
     }>,
   ): Promise<GraphEdge> {
     const memKey = `${tenantId}:${relId}`;
     const existing = memoryEdges.get(memKey);
     const now = new Date().toISOString();
+    const newVersion = (existing?.version ?? 1) + 1;
 
     if (existing) {
       const updated: GraphEdge = {
@@ -485,6 +613,10 @@ export class Neo4jGraphRepository implements IGraphRepository {
         weight: updates.weight ?? existing.weight,
         properties: updates.properties ?? existing.properties,
         updatedAt: now,
+        updatedBy: updates.updatedBy ?? existing.updatedBy,
+        version: updates.version ?? newVersion,
+        hasConflict: updates.hasConflict ?? existing.hasConflict ?? false,
+        conflictedFields: updates.conflictedFields ?? existing.conflictedFields,
       };
       memoryEdges.set(memKey, updated);
     }
@@ -503,7 +635,11 @@ export class Neo4jGraphRepository implements IGraphRepository {
               r.strokeColor = COALESCE($strokeColor, r.strokeColor),
               r.weight = COALESCE($weight, r.weight),
               r.properties = COALESCE($properties, r.properties),
-              r.updatedAt = $now
+              r.updatedAt = $now,
+              r.updatedBy = COALESCE($updatedBy, r.updatedBy),
+              r.version = coalesce(r.version, 1) + 1,
+              r.hasConflict = COALESCE($hasConflict, r.hasConflict, false),
+              r.conflictedFields = COALESCE($conflictedFields, r.conflictedFields)
             RETURN r
             `,
             {
@@ -516,6 +652,9 @@ export class Neo4jGraphRepository implements IGraphRepository {
               strokeColor: updates.strokeColor ?? null,
               weight: updates.weight ?? null,
               properties: updates.properties ?? null,
+              updatedBy: updates.updatedBy || null,
+              hasConflict: updates.hasConflict !== undefined ? updates.hasConflict : null,
+              conflictedFields: updates.conflictedFields ? JSON.stringify(updates.conflictedFields) : null,
               now,
             },
           ),
@@ -526,7 +665,12 @@ export class Neo4jGraphRepository implements IGraphRepository {
           throw new Error(`Edge ${relId} not found in tenant ${tenantId}`);
         }
 
-        return result.records[0].get("r").properties as GraphEdge;
+        const raw = result.records[0].get("r").properties;
+        return {
+          ...raw,
+          version: Number(raw.version ?? newVersion),
+          hasConflict: Boolean(raw.hasConflict),
+        } as GraphEdge;
       });
     } catch (err) {
       if (existing) return existing;
@@ -566,7 +710,7 @@ export class Neo4jGraphRepository implements IGraphRepository {
           const result = await session.executeRead((tx) =>
             tx.run(
               `
-              MATCH (w:Workspace { tenantId: $tenantId, id: $workspaceId })
+              MATCH (w:Investigation { tenantId: $tenantId, id: $workspaceId })
               OPTIONAL MATCH (w)-[:CONTAINS]->(n:Node { tenantId: $tenantId })
               OPTIONAL MATCH (n)-[r:RELATES_TO { tenantId: $tenantId }]->(m:Node { tenantId: $tenantId })
               RETURN
@@ -592,12 +736,22 @@ export class Neo4jGraphRepository implements IGraphRepository {
                   x: Number(p.posX ?? 250),
                   y: Number(p.posY ?? 150),
                 },
+                version: Number(p.version ?? 1),
+                hasConflict: Boolean(p.hasConflict),
+                conflictedFields: p.conflictedFields ? (typeof p.conflictedFields === "string" ? JSON.parse(p.conflictedFields) : p.conflictedFields) : undefined,
               } as GraphNode;
             });
 
           const edges = (record.get("edges") || [])
             .filter(Boolean)
-            .map((r: { properties: GraphEdge }) => r.properties);
+            .map((r: { properties: any }) => {
+              const p = r.properties;
+              return {
+                ...p,
+                version: Number(p.version ?? 1),
+                hasConflict: Boolean(p.hasConflict),
+              } as GraphEdge;
+            });
 
           return { nodes, edges };
         },

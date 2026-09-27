@@ -1,9 +1,10 @@
 // =============================================================================
-// API/Controller Layer — /api/graph/node (Node CRUD)
+// API/Controller Layer — /api/graph/node (POST, PUT, DELETE)
+// Guarded with strict Auth0 authentication requirements.
 // =============================================================================
 
 import { NextRequest, NextResponse } from "next/server";
-import { getAuthContext, UnauthorizedError } from "@/lib/auth";
+import { getAuthenticatedUserOrGuest, requireAuthenticatedUser, UnauthorizedError, ForbiddenError } from "@/lib/auth";
 import { CreateNodeSchema, UpdateNodeSchema } from "@/types/api";
 import { graphServiceSingleton } from "@/services/graphService";
 import type { ApiResponse } from "@/types/api";
@@ -13,9 +14,10 @@ export async function POST(
   req: NextRequest,
 ): Promise<NextResponse<ApiResponse<GraphNode>>> {
   try {
-    const auth = await getAuthContext(req);
-    const body = await req.json();
+    const auth = await getAuthenticatedUserOrGuest(req);
+    requireAuthenticatedUser(auth);
 
+    const body = await req.json();
     const parsed = CreateNodeSchema.safeParse(body);
     if (!parsed.success) {
       return NextResponse.json(
@@ -35,19 +37,23 @@ export async function POST(
       auth.tenantId,
       auth.userId,
       parsed.data,
+      auth.name,
     );
+
     return NextResponse.json({ success: true, data: created }, { status: 201 });
   } catch (err: any) {
     if (err instanceof UnauthorizedError) {
       return NextResponse.json(
-        {
-          success: false,
-          error: { code: "UNAUTHORIZED", message: err.message },
-        },
+        { success: false, error: { code: err.code || "AUTH_REQUIRED", message: err.message } },
         { status: 401 },
       );
     }
-    console.error("[/api/graph/node POST] Error:", err);
+    if (err instanceof ForbiddenError) {
+      return NextResponse.json(
+        { success: false, error: { code: err.code || "FORBIDDEN", message: err.message } },
+        { status: 403 },
+      );
+    }
     return NextResponse.json(
       {
         success: false,
@@ -60,44 +66,50 @@ export async function POST(
 
 export async function PUT(
   req: NextRequest,
-): Promise<NextResponse<ApiResponse<GraphNode | { success: boolean }>>> {
+): Promise<NextResponse<ApiResponse<{ node: GraphNode; hasConflict: boolean }>>> {
   try {
-    const auth = await getAuthContext(req);
-    const body = await req.json();
+    const auth = await getAuthenticatedUserOrGuest(req);
+    requireAuthenticatedUser(auth);
 
-    const nodeId = req.nextUrl.searchParams.get("nodeId") || body.nodeId;
-    if (!nodeId) {
+    const body = await req.json();
+    const { id, positionOnly, ...rest } = body;
+
+    if (!id || typeof id !== "string") {
       return NextResponse.json(
         {
           success: false,
-          error: { code: "BAD_REQUEST", message: "Missing nodeId parameter" },
+          error: { code: "BAD_REQUEST", message: "Missing required node id" },
         },
         { status: 400 },
       );
     }
 
-    // Check if position only update
-    if (body.position && Object.keys(body).length <= 3 && body.workspaceId) {
+    // Fast position sync path
+    if (positionOnly && rest.position && rest.workspaceId) {
       await graphServiceSingleton.updateNodePosition(
         auth.tenantId,
-        body.workspaceId,
-        nodeId,
-        body.position,
+        rest.workspaceId,
+        id,
+        rest.position,
+        auth.userId,
       );
       return NextResponse.json(
-        { success: true, data: { success: true } },
+        {
+          success: true,
+          data: { node: { id, position: rest.position } as GraphNode, hasConflict: false },
+        },
         { status: 200 },
       );
     }
 
-    const parsed = UpdateNodeSchema.safeParse(body);
+    const parsed = UpdateNodeSchema.safeParse(rest);
     if (!parsed.success) {
       return NextResponse.json(
         {
           success: false,
           error: {
             code: "BAD_REQUEST",
-            message: "Invalid node update payload",
+            message: "Invalid update payload",
             details: parsed.error.flatten(),
           },
         },
@@ -105,22 +117,27 @@ export async function PUT(
       );
     }
 
-    const updated = await graphServiceSingleton.updateNode(
+    const result = await graphServiceSingleton.updateNode(
       auth.tenantId,
       parsed.data.workspaceId,
-      nodeId,
+      id,
       parsed.data,
+      auth.userId,
+      auth.name,
     );
 
-    return NextResponse.json({ success: true, data: updated }, { status: 200 });
+    return NextResponse.json({ success: true, data: result }, { status: 200 });
   } catch (err: any) {
     if (err instanceof UnauthorizedError) {
       return NextResponse.json(
-        {
-          success: false,
-          error: { code: "UNAUTHORIZED", message: err.message },
-        },
+        { success: false, error: { code: err.code || "AUTH_REQUIRED", message: err.message } },
         { status: 401 },
+      );
+    }
+    if (err instanceof ForbiddenError) {
+      return NextResponse.json(
+        { success: false, error: { code: err.code || "FORBIDDEN", message: err.message } },
+        { status: 403 },
       );
     }
     return NextResponse.json(
@@ -137,17 +154,19 @@ export async function DELETE(
   req: NextRequest,
 ): Promise<NextResponse<ApiResponse<{ deleted: boolean }>>> {
   try {
-    const auth = await getAuthContext(req);
-    const nodeId = req.nextUrl.searchParams.get("nodeId");
-    const workspaceId = req.nextUrl.searchParams.get("workspaceId");
+    const auth = await getAuthenticatedUserOrGuest(req);
+    requireAuthenticatedUser(auth);
 
-    if (!nodeId || !workspaceId) {
+    const body = await req.json();
+    const { id, workspaceId } = body;
+
+    if (!id || !workspaceId) {
       return NextResponse.json(
         {
           success: false,
           error: {
             code: "BAD_REQUEST",
-            message: "Missing nodeId or workspaceId",
+            message: "Missing node id or workspaceId",
           },
         },
         { status: 400 },
@@ -157,20 +176,23 @@ export async function DELETE(
     const deleted = await graphServiceSingleton.deleteNode(
       auth.tenantId,
       workspaceId,
-      nodeId,
+      id,
+      auth.userId,
+      auth.name,
     );
-    return NextResponse.json(
-      { success: true, data: { deleted } },
-      { status: 200 },
-    );
+
+    return NextResponse.json({ success: true, data: { deleted } }, { status: 200 });
   } catch (err: any) {
     if (err instanceof UnauthorizedError) {
       return NextResponse.json(
-        {
-          success: false,
-          error: { code: "UNAUTHORIZED", message: err.message },
-        },
+        { success: false, error: { code: err.code || "AUTH_REQUIRED", message: err.message } },
         { status: 401 },
+      );
+    }
+    if (err instanceof ForbiddenError) {
+      return NextResponse.json(
+        { success: false, error: { code: err.code || "FORBIDDEN", message: err.message } },
+        { status: 403 },
       );
     }
     return NextResponse.json(

@@ -1,5 +1,5 @@
-import path from 'path';
-import { fileURLToPath } from 'url';
+import path from "path";
+import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,10 +15,21 @@ const nextConfig = {
       tls: false,
     };
 
+    config.ignoreWarnings = [
+      { module: /@auth0\/nextjs-auth0/ },
+      {
+        message:
+          /Critical dependency: the request of a dependency is an expression/,
+      },
+    ];
+
     config.resolve.alias = {
       ...config.resolve.alias,
-      'regraph': path.resolve(__dirname, 'lib/regraphShim.ts'),
-      '@cambridge-intelligence/regraph': path.resolve(__dirname, 'lib/regraphShim.ts'),
+      regraph: path.resolve(__dirname, "lib/regraphShim.ts"),
+      "@cambridge-intelligence/regraph": path.resolve(
+        __dirname,
+        "lib/regraphShim.ts",
+      ),
     };
 
     return config;

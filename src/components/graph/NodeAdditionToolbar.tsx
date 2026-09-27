@@ -19,11 +19,12 @@ export interface NodeAdditionToolbarProps {
     label: string;
     nodeType: NodeType;
     status: NodeStatus;
-    citationsCount: number;
+    citationsCount?: number;
     subtitle?: string;
     description?: string;
     position?: { x: number; y: number };
   }) => void;
+  isSaving?: boolean;
 }
 
 const TOOLBAR_TYPES: Array<{

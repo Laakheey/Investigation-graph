@@ -1,43 +1,30 @@
 // =============================================================================
 // Authentication & Multi-Tenant Session Management (Server-side)
 // -----------------------------------------------------------------------------
-// Uses @auth0/nextjs-auth0 v4 SDK (Auth0Client pattern).
-// getAuthContext() is the single entry point for all API routes — same signature
-// as before so no API route code needs to be modified.
-//
-// ── Multi-tenancy via Auth0 Action ───────────────────────────────────────────
-// To attach a tenantId to every ID token, create an Auth0 Action:
-//   Dashboard → Actions → Library → Create Action (Login / Post Login)
-//
-//   exports.onExecutePostLogin = async (event, api) => {
-//     const ns = 'https://ebrr.app';
-//     const tenantId = event.user.app_metadata?.tenantId
-//       || `tenant-${event.user.user_id.split('|')[1]?.slice(0, 8)}`;
-//     api.idToken.setCustomClaim(`${ns}/tenantId`, tenantId);
-//     api.idToken.setCustomClaim(`${ns}/tenantName`, event.user.app_metadata?.tenantName || event.user.email);
-//     api.idToken.setCustomClaim(`${ns}/roles`, event.authorization?.roles || ['investigator']);
-//   };
-//
-// Then assign tenants to users via Auth0 Management API:
-//   PATCH https://dev-zx3iyg52ic8j5d6a.us.auth0.com/api/v2/users/{id}
-//   body: { "app_metadata": { "tenantId": "tenant-alpha-compliance", "tenantName": "Alpha Corp" } }
+// Uses @auth0/nextjs-auth0 v4 SDK with dynamic Guest Demo Mode support.
+// Respects process.env.ALLOW_GUEST_READ for read operations.
+// Strict mutation guards enforce real authenticated sessions.
 // =============================================================================
 
 import { auth0 } from './auth0';
 import type { NextRequest } from 'next/server';
-import type { AuthContext } from '../types';
+import type { AuthContext, WorkspaceRole } from '../types/domain';
 
 export class UnauthorizedError extends Error {
-  constructor(message = 'Missing or invalid authorization session') {
+  code: string;
+  constructor(message = 'Missing or invalid authorization session', code = 'AUTH_REQUIRED') {
     super(message);
     this.name = 'UnauthorizedError';
+    this.code = code;
   }
 }
 
 export class ForbiddenError extends Error {
-  constructor(message = 'Insufficient permissions') {
+  code: string;
+  constructor(message = 'Insufficient permissions for this action', code = 'FORBIDDEN') {
     super(message);
     this.name = 'ForbiddenError';
+    this.code = code;
   }
 }
 
@@ -45,12 +32,10 @@ export class ForbiddenError extends Error {
 const NS = 'https://ebrr.app';
 
 /**
- * Derives AuthContext from the Auth0 session attached to the current request.
- * Signature is identical to the old implementation — zero changes needed in API routes.
+ * Derives AuthContext from Auth0 session or returns GuestSession if demo mode is enabled.
  */
-export async function getAuthContext(_req?: NextRequest): Promise<AuthContext> {
+export async function getAuthenticatedUserOrGuest(req?: NextRequest): Promise<AuthContext> {
   try {
-    // auth0.getSession() reads the encrypted session cookie
     const session = await auth0.getSession();
 
     if (session?.user) {
@@ -67,44 +52,74 @@ export async function getAuthContext(_req?: NextRequest): Promise<AuthContext> {
         'My Organization';
 
       const roles: string[] =
-        (u[`${NS}/roles`] as string[]) ||
-        ['investigator'];
+        (u[`${NS}/roles`] as string[]) || ['investigator'];
+
+      const role: WorkspaceRole =
+        roles.includes('admin') || roles.includes('OWNER')
+          ? 'OWNER'
+          : roles.includes('EDITOR')
+          ? 'EDITOR'
+          : 'VIEWER';
 
       return {
         userId: u.sub ?? 'unknown',
         email: u.email ?? undefined,
         name: u.name ?? u.nickname ?? u.email ?? 'User',
+        picture: u.picture,
         tenantId,
         tenantName,
         roles,
-        permissions: ['read:investigations', 'write:investigations'],
+        role,
+        isGuest: false,
+        permissions: ['read:investigations', 'write:investigations', 'read:graph', 'write:graph'],
       };
     }
   } catch {
-    // getSession() may throw outside a Next.js request context
+    // getSession() throws outside request context or when session is absent
   }
 
-  // Development fallback — unauthenticated requests still work locally
-  if (process.env.NODE_ENV === 'development') {
+  // ── Guest Demo Mode Gatekeeping ──────────────────────────────────────────
+  const isGuestAllowed = process.env.ALLOW_GUEST_READ === 'true' || process.env.NODE_ENV === 'development';
+
+  if (isGuestAllowed) {
     return {
-      userId: 'dev-user-001',
-      email: 'dev@ebrr.local',
-      name: 'Dev User',
-      tenantId: 'tenant-dev',
-      tenantName: 'Development Tenant',
-      roles: ['investigator', 'admin'],
-      permissions: ['read:investigations', 'write:investigations'],
+      userId: 'guest_user',
+      name: 'Guest Investigator',
+      email: undefined,
+      tenantId: 'tenant-alpha-compliance',
+      tenantName: 'EBRR Public Demo Workspace',
+      roles: ['GUEST_VIEWER'],
+      role: 'GUEST_VIEWER',
+      isGuest: true,
+      permissions: ['read:investigations', 'read:graph'],
     };
   }
 
-  throw new UnauthorizedError('No active session. Please log in at /auth/login.');
+  throw new UnauthorizedError('Authentication required. Please sign in.', 'AUTH_REQUIRED');
 }
 
-export function requireRole(auth: AuthContext, ...allowed: string[]): void {
-  if (!allowed.some((role) => auth.roles.includes(role))) {
-    throw new ForbiddenError(`Requires one of roles: ${allowed.join(', ')}`);
+/**
+ * Enforces that the caller is a real, authenticated user (not a guest).
+ * Must be called on all mutation operations (POST/PUT/DELETE).
+ */
+export function requireAuthenticatedUser(auth: AuthContext): void {
+  if (auth.isGuest || auth.role === 'GUEST_VIEWER' || auth.userId === 'guest_user') {
+    throw new UnauthorizedError('Sign in to create or edit data.', 'AUTH_REQUIRED');
   }
 }
 
-// Keep legacy exports so existing imports don't break
+/**
+ * RBAC Role Check for operations (OWNER, EDITOR, VIEWER)
+ */
+export function requireRole(auth: AuthContext, ...allowed: string[]): void {
+  requireAuthenticatedUser(auth);
+  if (!allowed.some((role) => auth.roles.includes(role) || auth.role === role)) {
+    throw new ForbiddenError(`Action requires one of roles: ${allowed.join(', ')}`);
+  }
+}
+
+// Backwards-compatible alias
+export const getAuthContext = getAuthenticatedUserOrGuest;
+
+// Keep legacy exports
 export { SESSION_COOKIE_NAME, DEMO_ACCOUNTS } from './authConstants';

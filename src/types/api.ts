@@ -4,7 +4,17 @@
 // =============================================================================
 
 import { z } from "zod";
-import type { GraphNode, GraphEdge, Investigation } from "./domain";
+import type {
+  GraphNode,
+  GraphEdge,
+  Investigation,
+  WorkspaceMember,
+  WorkspaceInvite,
+  WorkspacePermissions,
+  AuditActionRecord,
+  ConflictRecord,
+  ConflictedFieldData,
+} from "./domain";
 
 export const CreateNodeSchema = z.object({
   workspaceId: z.string().min(1),
@@ -46,6 +56,7 @@ export const UpdateNodeSchema = z.object({
   properties: z
     .record(z.union([z.string(), z.number(), z.boolean()]))
     .optional(),
+  expectedVersion: z.number().int().positive().optional(),
 });
 
 export const CreateEdgeSchema = z.object({
@@ -84,44 +95,60 @@ export const UpdateEdgeSchema = z.object({
   properties: z
     .record(z.union([z.string(), z.number(), z.boolean()]))
     .optional(),
+  expectedVersion: z.number().int().positive().optional(),
 });
 
-export const CreateInvestigationSchema = z.object({
-  name: z.string().min(1).max(200).optional(),
-  title: z.string().min(1).max(200).optional(),
-  description: z.string().min(1).max(2000),
-  conductType: z.string().max(100).default("Ongoing practice"),
-  dateRange: z.string().max(100).optional(),
-  consequentialConduct: z.string().max(5000).optional(),
-  knownPeopleOrgs: z.string().max(2000).optional(),
-  knownAiSystems: z.string().max(2000).optional(),
-  status: z.string().optional(),
-  leadInvestigator: z.string().optional(),
-}).refine((data) => data.name || data.title, {
-  message: "Either name or title must be provided",
+export const CreateInvestigationSchema = z
+  .object({
+    name: z.string().min(1).max(200).optional(),
+    title: z.string().min(1).max(200).optional(),
+    description: z.string().min(1).max(2000),
+    conductType: z.string().max(100).default("Ongoing practice"),
+    dateRange: z.string().max(100).optional(),
+    consequentialConduct: z.string().max(5000).optional(),
+    knownPeopleOrgs: z.string().max(2000).optional(),
+    knownAiSystems: z.string().max(2000).optional(),
+    status: z.string().optional(),
+    leadInvestigator: z.string().optional(),
+  })
+  .refine((data) => data.name || data.title, {
+    message: "Either name or title must be provided",
+  });
+
+export const InviteMemberSchema = z.object({
+  email: z.string().email(),
+  role: z.enum(["OWNER", "EDITOR", "VIEWER"]).default("VIEWER"),
+});
+
+export const AcceptInviteSchema = z.object({
+  token: z.string().min(1),
+});
+
+export const ResolveConflictSchema = z.object({
+  entityId: z.string().min(1),
+  entityType: z.enum(["NODE", "EDGE"]),
+  resolvedFields: z.record(z.any()),
+  resolutionComment: z.string().max(1000).optional(),
 });
 
 export interface ApiResponse<T> {
   success: boolean;
   data?: T;
   error?: {
-    code:
-      | "BAD_REQUEST"
-      | "UNAUTHORIZED"
-      | "FORBIDDEN"
-      | "NOT_FOUND"
-      | "INTERNAL_ERROR";
+    code: string;
     message: string;
-    details?: unknown;
+    details?: any;
   };
 }
 
-export interface AuthContext {
-  userId: string;
-  email?: string;
-  name?: string;
-  tenantId: string;
-  tenantName?: string;
-  roles: string[];
-  permissions?: string[];
-}
+export type {
+  GraphNode,
+  GraphEdge,
+  Investigation,
+  WorkspaceMember,
+  WorkspaceInvite,
+  WorkspacePermissions,
+  AuditActionRecord,
+  ConflictRecord,
+  ConflictedFieldData,
+};

@@ -4,7 +4,7 @@
 // Presentation Layer — Custom React Flow Node Card Component
 // -----------------------------------------------------------------------------
 // Renders rich investigation card nodes with domain-colored left borders,
-// typed subtext, status badges, citations count, and left/right drag handles.
+// typed subtext, status badges, version lineage, and pulsating conflict alerts.
 // =============================================================================
 
 import React, { memo } from "react";
@@ -17,8 +17,10 @@ import {
   Cpu,
   AlertTriangle,
   FileText,
+  Clock,
+  GitMerge,
 } from "lucide-react";
-import type { NodeType, NodeStatus } from "../../types/domain";
+import type { NodeType, NodeStatus, ConflictedFieldData } from "../../types/domain";
 
 export interface CustomNodeData {
   label: string;
@@ -28,6 +30,12 @@ export interface CustomNodeData {
   subtitle?: string;
   description?: string;
   properties?: Record<string, string | number | boolean>;
+  version?: number;
+  hasConflict?: boolean;
+  conflictedFields?: Record<string, ConflictedFieldData>;
+  createdBy?: string;
+  updatedBy?: string;
+  onOpenConflictResolver?: (nodeId: string) => void;
 }
 
 const TYPE_CONFIG: Record<
@@ -85,7 +93,7 @@ const STATUS_BADGES: Record<string, string> = {
   Pending: "border-amber-500/30 text-amber-400 bg-amber-500/10",
 };
 
-function CustomNodeCardComponent({ data, selected }: NodeProps) {
+function CustomNodeCardComponent({ id, data, selected }: NodeProps) {
   const nodeData = data as unknown as CustomNodeData;
   const config = TYPE_CONFIG[nodeData.nodeType] || TYPE_CONFIG.Person;
   const Icon = config.icon;
@@ -96,7 +104,9 @@ function CustomNodeCardComponent({ data, selected }: NodeProps) {
   return (
     <div
       className={`relative min-w-[210px] max-w-[260px] rounded-xl border border-border/80 bg-card p-3.5 shadow-md backdrop-blur-md transition-all select-none ${
-        config.borderColor
+        nodeData.hasConflict
+          ? "border-amber-500 ring-2 ring-amber-500/40 shadow-amber-500/10"
+          : config.borderColor
       } border-l-[5px] ${
         selected
           ? "ring-2 ring-primary shadow-lg scale-[1.02]"
@@ -109,6 +119,28 @@ function CustomNodeCardComponent({ data, selected }: NodeProps) {
         position={Position.Left}
         className="!h-3.5 !w-3.5 !-left-2 !bg-primary !border-2 !border-background !rounded-full hover:!scale-125 transition-transform cursor-crosshair"
       />
+
+      {/* Conflict Alert Ribbon if Conflicted */}
+      {nodeData.hasConflict && (
+        <div
+          onClick={(e) => {
+            e.stopPropagation();
+            if (nodeData.onOpenConflictResolver) {
+              nodeData.onOpenConflictResolver(id);
+            }
+          }}
+          className="mb-2 -mt-1 -mx-1 flex items-center justify-between gap-1.5 px-2 py-1 rounded-md bg-amber-500/20 border border-amber-500/40 text-amber-300 text-[10px] font-bold cursor-pointer hover:bg-amber-500/30 transition-colors animate-pulse"
+          title="Click to resolve concurrent edit conflict"
+        >
+          <div className="flex items-center gap-1">
+            <AlertTriangle className="h-3 w-3 text-amber-400 shrink-0" />
+            <span>Conflict Detected</span>
+          </div>
+          <span className="flex items-center gap-0.5 text-[9px] underline">
+            Resolve <GitMerge className="h-2.5 w-2.5" />
+          </span>
+        </div>
+      )}
 
       {/* Header: Icon, Type & Status */}
       <div className="flex items-center justify-between gap-2 mb-1.5">
@@ -125,13 +157,20 @@ function CustomNodeCardComponent({ data, selected }: NodeProps) {
           </span>
         </div>
 
-        {nodeData.status && (
-          <span
-            className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full border ${statusClass}`}
-          >
-            {nodeData.status}
-          </span>
-        )}
+        <div className="flex items-center gap-1">
+          {nodeData.version && (
+            <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-muted text-muted-foreground">
+              v{nodeData.version}
+            </span>
+          )}
+          {nodeData.status && (
+            <span
+              className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full border ${statusClass}`}
+            >
+              {nodeData.status}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Title / Label */}
@@ -147,16 +186,18 @@ function CustomNodeCardComponent({ data, selected }: NodeProps) {
         {nodeData.subtitle || config.defaultSubtitle}
       </p>
 
-      {/* Footer: Citations badge if present */}
-      {(nodeData.citationsCount ?? 0) > 0 && (
-        <div className="mt-2.5 pt-2 border-t border-border/50 flex items-center justify-between text-[10px] text-muted-foreground font-mono">
-          <span className="flex items-center gap-1">
-            <FileText className="h-3 w-3 text-primary" />
-            <span>{nodeData.citationsCount} citations</span>
+      {/* Footer: Citations badge & audit trail preview */}
+      <div className="mt-2.5 pt-2 border-t border-border/50 flex items-center justify-between text-[10px] text-muted-foreground font-mono">
+        <span className="flex items-center gap-1">
+          <FileText className="h-3 w-3 text-primary" />
+          <span>{nodeData.citationsCount ?? 0} citations</span>
+        </span>
+        {nodeData.updatedBy && (
+          <span className="text-[9px] text-muted-foreground truncate max-w-[80px]" title={`Last updated by ${nodeData.updatedBy}`}>
+            ✍ {nodeData.updatedBy}
           </span>
-          <span className="text-[9px] text-border">●</span>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* Source Handle (Right Edge) */}
       <Handle

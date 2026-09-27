@@ -1,20 +1,20 @@
 'use client';
 
 // =============================================================================
-// Auth Provider — powered by @auth0/nextjs-auth0 v4
-// Wraps useUser() and exposes the same AuthState shape so all existing
-// components (TopNavigation, Dashboard, etc.) continue working unchanged.
+// Auth Provider — powered by @auth0/nextjs-auth0 v4 with Demo Mode Fallback
+// Wraps useUser() and exposes AuthContext with isGuest and role metadata.
 // =============================================================================
 
 import React, { createContext, useContext } from 'react';
 import { useUser } from '@auth0/nextjs-auth0/client';
-import type { AuthContext } from '../../types';
+import type { AuthContext, WorkspaceRole } from '../../types/domain';
 
 const NS = 'https://ebrr.app';
 
 interface AuthState {
   user: AuthContext | null;
   isLoading: boolean;
+  isGuest: boolean;
   login: () => void;
   logout: () => void;
   switchTenant: (tenantId: string) => void;
@@ -30,6 +30,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         userId: auth0User.sub ?? 'unknown',
         email: auth0User.email ?? undefined,
         name: auth0User.name ?? auth0User.nickname ?? auth0User.email ?? 'User',
+        picture: auth0User.picture,
         tenantId:
           (auth0User[`${NS}/tenantId`] as string) ||
           (auth0User.org_id as string) ||
@@ -39,9 +40,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           auth0User.email?.split('@')[1]?.split('.')[0] ||
           'My Organization',
         roles: (auth0User[`${NS}/roles`] as string[]) || ['investigator'],
-        permissions: ['read:investigations', 'write:investigations'],
+        role: (auth0User[`${NS}/roles`]?.includes('admin') ? 'OWNER' : 'EDITOR') as WorkspaceRole,
+        isGuest: false,
+        permissions: ['read:investigations', 'write:investigations', 'read:graph', 'write:graph'],
       }
-    : null;
+    : {
+        userId: 'guest_user',
+        name: 'Guest Investigator',
+        email: undefined,
+        tenantId: 'tenant-alpha-compliance',
+        tenantName: 'EBRR Public Demo Workspace',
+        roles: ['GUEST_VIEWER'],
+        role: 'GUEST_VIEWER',
+        isGuest: true,
+        permissions: ['read:investigations', 'read:graph'],
+      };
 
   const login = () => {
     window.location.href = '/auth/login';
@@ -52,13 +65,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const switchTenant = (_tenantId: string) => {
-    // Real tenant switching requires Auth0 Management API changes to app_metadata.
-    // For now, log a warning — implement later with the Management API.
     console.warn('Tenant switching requires Auth0 app_metadata update via Management API.');
   };
 
+  const isGuest = !auth0User;
+
   return (
-    <AuthReactContext.Provider value={{ user, isLoading, login, logout, switchTenant }}>
+    <AuthReactContext.Provider value={{ user, isLoading, isGuest, login, logout, switchTenant }}>
       {children}
     </AuthReactContext.Provider>
   );

@@ -113,13 +113,13 @@ export default function DashboardPage() {
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-border/60">
           <div>
             <div className="flex items-center gap-2 mb-1">
-              <span className="text-xs font-mono uppercase bg-primary/20 text-primary px-2 py-0.5 rounded border border-primary/30">
+              {/* <span className="text-xs font-mono uppercase bg-primary/20 text-primary px-2 py-0.5 rounded border border-primary/30">
                 Enterprise Workspace
-              </span>
-              <span className="text-xs text-muted-foreground flex items-center gap-1">
+              </span> */}
+              {/* <span className="text-xs text-muted-foreground flex items-center gap-1">
                 <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />{" "}
                 Multi-Tenant Neo4j Isolated
-              </span>
+              </span> */}
             </div>
             <h1 className="text-2xl font-bold tracking-tight text-foreground">
               Investigation Matters & Graph Intelligence

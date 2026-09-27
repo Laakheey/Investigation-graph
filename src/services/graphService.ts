@@ -1,9 +1,9 @@
 // =============================================================================
-// Business Logic Layer — Graph Service
+// Business Logic Layer — Graph Service with Audit & Concurrency Conflict Tracking
 // -----------------------------------------------------------------------------
 // SOLID:
 // - Dependency Inversion Principle (DIP): Injects IGraphRepository & ICacheService.
-// - Single Responsibility Principle (SRP): Coordinates business domain transformations.
+// - Single Responsibility Principle (SRP): Coordinates domain transformations and audits.
 // =============================================================================
 
 import { IGraphRepository, Neo4jGraphRepository } from "../db/graphRepository";
@@ -12,6 +12,7 @@ import {
   RedisCacheService,
   cacheServiceSingleton,
 } from "./cacheService";
+import { auditServiceSingleton, AuditService } from "./auditService";
 import type {
   GraphNode,
   GraphEdge,
@@ -19,6 +20,7 @@ import type {
   NodeStatus,
   EdgeDirectionality,
   EdgeLineStyle,
+  ConflictedFieldData,
 } from "../types/domain";
 
 export interface ReactFlowNodeData {
@@ -35,6 +37,10 @@ export interface ReactFlowNodeData {
     properties: Record<string, string | number | boolean>;
     createdAt: string;
     createdBy?: string;
+    updatedBy?: string;
+    version: number;
+    hasConflict?: boolean;
+    conflictedFields?: Record<string, ConflictedFieldData>;
   };
 }
 
@@ -52,6 +58,9 @@ export interface ReactFlowEdgeData {
     strokeColor: string;
     weight?: number;
     properties: Record<string, string | number | boolean>;
+    version: number;
+    hasConflict?: boolean;
+    conflictedFields?: Record<string, ConflictedFieldData>;
   };
 }
 
@@ -61,6 +70,7 @@ export interface GraphVisualizationPayload {
   stats: {
     nodeCount: number;
     edgeCount: number;
+    conflictCount: number;
   };
 }
 
@@ -68,6 +78,7 @@ export class GraphService {
   constructor(
     private readonly repository: IGraphRepository = new Neo4jGraphRepository(),
     private readonly cacheService: ICacheService = cacheServiceSingleton,
+    private readonly auditService: AuditService = auditServiceSingleton,
   ) {}
 
   async getGraphForInvestigation(
@@ -181,8 +192,21 @@ export class GraphService {
       position?: { x: number; y: number };
       properties?: Record<string, string | number | boolean>;
     },
+    userName = "Investigator",
   ): Promise<GraphNode> {
     const created = await this.repository.createNode(tenantId, userId, payload);
+
+    // Audit Logging
+    await this.auditService.logAction(tenantId, {
+      action: "CREATE_NODE",
+      userId,
+      userName,
+      entityType: "Node",
+      entityId: created.id,
+      workspaceId: payload.workspaceId,
+      newValue: { label: created.label, nodeType: created.nodeType },
+    });
+
     await this.cacheService.invalidateInvestigationGraph(
       tenantId,
       payload.workspaceId,
@@ -203,11 +227,92 @@ export class GraphService {
       description: string;
       position: { x: number; y: number };
       properties: Record<string, string | number | boolean>;
+      expectedVersion?: number;
     }>,
-  ): Promise<GraphNode> {
-    const updated = await this.repository.updateNode(tenantId, nodeId, updates);
+    userId = "system",
+    userName = "Investigator",
+  ): Promise<{ node: GraphNode; hasConflict: boolean }> {
+    const existing = await this.repository.getNodeById(tenantId, nodeId);
+
+    // ── Concurrency Conflict Check ───────────────────────────────────────────
+    if (
+      existing &&
+      updates.expectedVersion !== undefined &&
+      existing.version > updates.expectedVersion
+    ) {
+      // Detected concurrent edit collision
+      const conflictedFields: Record<string, ConflictedFieldData> = {};
+
+      if (updates.label && updates.label !== existing.label) {
+        conflictedFields.label = {
+          originalValue: existing.label,
+          currentValue: existing.label,
+          incomingValue: updates.label,
+          authorA: { userId: existing.updatedBy || existing.createdBy, name: "Previous Editor", timestamp: existing.updatedAt },
+          authorB: { userId, name: userName, timestamp: new Date().toISOString() },
+        };
+      }
+
+      if (updates.status && updates.status !== existing.status) {
+        conflictedFields.status = {
+          originalValue: existing.status,
+          currentValue: existing.status,
+          incomingValue: updates.status,
+          authorA: { userId: existing.updatedBy || existing.createdBy, name: "Previous Editor", timestamp: existing.updatedAt },
+          authorB: { userId, name: userName, timestamp: new Date().toISOString() },
+        };
+      }
+
+      if (updates.description && updates.description !== existing.description) {
+        conflictedFields.description = {
+          originalValue: existing.description,
+          currentValue: existing.description,
+          incomingValue: updates.description,
+          authorA: { userId: existing.updatedBy || existing.createdBy, name: "Previous Editor", timestamp: existing.updatedAt },
+          authorB: { userId, name: userName, timestamp: new Date().toISOString() },
+        };
+      }
+
+      const conflict = await this.auditService.flagConflict(
+        tenantId,
+        workspaceId,
+        nodeId,
+        "NODE",
+        conflictedFields,
+        userId,
+        userName,
+      );
+
+      const conflictedNode: GraphNode = {
+        ...existing,
+        hasConflict: true,
+        conflictedFields: conflict.conflictedFields,
+      };
+
+      await this.cacheService.invalidateInvestigationGraph(tenantId, workspaceId);
+      return { node: conflictedNode, hasConflict: true };
+    }
+
+    // Normal safe update
+    const updated = await this.repository.updateNode(tenantId, nodeId, {
+      ...updates,
+      updatedBy: userId,
+    });
+
+    // Audit Logging
+    await this.auditService.logAction(tenantId, {
+      action: "UPDATE_NODE_PROPERTIES",
+      userId,
+      userName,
+      entityType: "Node",
+      entityId: nodeId,
+      workspaceId,
+      previousValue: existing ? { label: existing.label, status: existing.status } : undefined,
+      newValue: { label: updated.label, status: updated.status },
+    });
+
     await this.cacheService.invalidateInvestigationGraph(tenantId, workspaceId);
-    return updated;
+    return { node: updated, hasConflict: false };
   }
 
   async updateNodePosition(
@@ -215,8 +320,9 @@ export class GraphService {
     workspaceId: string,
     nodeId: string,
     position: { x: number; y: number },
+    userId = "system",
   ): Promise<void> {
-    await this.repository.updateNodePosition(tenantId, nodeId, position);
+    await this.repository.updateNodePosition(tenantId, nodeId, position, userId);
     await this.cacheService.invalidateInvestigationGraph(tenantId, workspaceId);
   }
 
@@ -224,8 +330,24 @@ export class GraphService {
     tenantId: string,
     workspaceId: string,
     nodeId: string,
+    userId = "system",
+    userName = "Investigator",
   ): Promise<boolean> {
+    const existing = await this.repository.getNodeById(tenantId, nodeId);
     const deleted = await this.repository.deleteNode(tenantId, nodeId);
+
+    if (deleted && existing) {
+      await this.auditService.logAction(tenantId, {
+        action: "DELETE_NODE",
+        userId,
+        userName,
+        entityType: "Node",
+        entityId: nodeId,
+        workspaceId,
+        previousValue: { label: existing.label, nodeType: existing.nodeType },
+      });
+    }
+
     await this.cacheService.invalidateInvestigationGraph(tenantId, workspaceId);
     return deleted;
   }
@@ -244,8 +366,24 @@ export class GraphService {
       weight?: number;
       properties?: Record<string, string | number | boolean>;
     },
+    userId = "system",
+    userName = "Investigator",
   ): Promise<GraphEdge> {
-    const created = await this.repository.createEdge(tenantId, payload);
+    const created = await this.repository.createEdge(tenantId, {
+      ...payload,
+      createdBy: userId,
+    });
+
+    await this.auditService.logAction(tenantId, {
+      action: "CREATE_EDGE",
+      userId,
+      userName,
+      entityType: "Edge",
+      entityId: created.relId,
+      workspaceId: payload.workspaceId,
+      newValue: { type: created.type, sourceId: created.sourceId, targetId: created.targetId },
+    });
+
     await this.cacheService.invalidateInvestigationGraph(
       tenantId,
       payload.workspaceId,
@@ -265,19 +403,55 @@ export class GraphService {
       strokeColor: string;
       weight: number;
       properties: Record<string, string | number | boolean>;
+      expectedVersion?: number;
     }>,
-  ): Promise<GraphEdge> {
-    const updated = await this.repository.updateEdge(tenantId, relId, updates);
+    userId = "system",
+    userName = "Investigator",
+  ): Promise<{ edge: GraphEdge; hasConflict: boolean }> {
+    const existing = await this.repository.getEdgeById(tenantId, relId);
+
+    const updated = await this.repository.updateEdge(tenantId, relId, {
+      ...updates,
+      updatedBy: userId,
+    });
+
+    await this.auditService.logAction(tenantId, {
+      action: "UPDATE_EDGE_STYLING",
+      userId,
+      userName,
+      entityType: "Edge",
+      entityId: relId,
+      workspaceId,
+      previousValue: existing ? { type: existing.type, lineStyle: existing.lineStyle } : undefined,
+      newValue: { type: updated.type, lineStyle: updated.lineStyle },
+    });
+
     await this.cacheService.invalidateInvestigationGraph(tenantId, workspaceId);
-    return updated;
+    return { edge: updated, hasConflict: false };
   }
 
   async deleteEdge(
     tenantId: string,
     workspaceId: string,
     relId: string,
+    userId = "system",
+    userName = "Investigator",
   ): Promise<boolean> {
+    const existing = await this.repository.getEdgeById(tenantId, relId);
     const deleted = await this.repository.deleteEdge(tenantId, relId);
+
+    if (deleted && existing) {
+      await this.auditService.logAction(tenantId, {
+        action: "DELETE_EDGE",
+        userId,
+        userName,
+        entityType: "Edge",
+        entityId: relId,
+        workspaceId,
+        previousValue: { type: existing.type, sourceId: existing.sourceId, targetId: existing.targetId },
+      });
+    }
+
     await this.cacheService.invalidateInvestigationGraph(tenantId, workspaceId);
     return deleted;
   }
@@ -286,39 +460,54 @@ export class GraphService {
     nodes: GraphNode[],
     edges: GraphEdge[],
   ): GraphVisualizationPayload {
-    const rfNodes: ReactFlowNodeData[] = nodes.map((node) => ({
-      id: node.id,
-      type: "customCard",
-      position: node.position || { x: 250, y: 150 },
-      data: {
-        label: node.label,
-        nodeType: node.nodeType,
-        status: node.status || "Active",
-        citationsCount: node.citationsCount || 0,
-        subtitle: node.subtitle,
-        description: node.description,
-        properties: node.properties,
-        createdAt: node.createdAt,
-        createdBy: node.createdBy,
-      },
-    }));
+    let conflictCount = 0;
 
-    const rfEdges: ReactFlowEdgeData[] = edges.map((edge) => ({
-      id: `edge_${edge.relId}`,
-      source: edge.sourceId,
-      target: edge.targetId,
-      type: "customMarker",
-      data: {
-        relId: edge.relId,
-        type: edge.type,
-        label: edge.label || edge.type,
-        directionality: edge.directionality || "single",
-        lineStyle: edge.lineStyle || "solid",
-        strokeColor: edge.strokeColor || "#2563EB",
-        weight: edge.weight ?? 1.5,
-        properties: edge.properties || {},
-      },
-    }));
+    const rfNodes: ReactFlowNodeData[] = nodes.map((node) => {
+      if (node.hasConflict) conflictCount++;
+      return {
+        id: node.id,
+        type: "customCard",
+        position: node.position || { x: 250, y: 150 },
+        data: {
+          label: node.label,
+          nodeType: node.nodeType,
+          status: node.status || "Active",
+          citationsCount: node.citationsCount || 0,
+          subtitle: node.subtitle,
+          description: node.description,
+          properties: node.properties || {},
+          createdAt: node.createdAt,
+          createdBy: node.createdBy,
+          updatedBy: node.updatedBy,
+          version: node.version || 1,
+          hasConflict: node.hasConflict || false,
+          conflictedFields: node.conflictedFields,
+        },
+      };
+    });
+
+    const rfEdges: ReactFlowEdgeData[] = edges.map((edge) => {
+      if (edge.hasConflict) conflictCount++;
+      return {
+        id: `edge_${edge.relId}`,
+        source: edge.sourceId,
+        target: edge.targetId,
+        type: "customMarker",
+        data: {
+          relId: edge.relId,
+          type: edge.type,
+          label: edge.label || edge.type,
+          directionality: edge.directionality || "single",
+          lineStyle: edge.lineStyle || "solid",
+          strokeColor: edge.strokeColor || "#2563EB",
+          weight: edge.weight ?? 1.5,
+          properties: edge.properties || {},
+          version: edge.version || 1,
+          hasConflict: edge.hasConflict || false,
+          conflictedFields: edge.conflictedFields,
+        },
+      };
+    });
 
     return {
       nodes: rfNodes,
@@ -326,6 +515,7 @@ export class GraphService {
       stats: {
         nodeCount: rfNodes.length,
         edgeCount: rfEdges.length,
+        conflictCount,
       },
     };
   }

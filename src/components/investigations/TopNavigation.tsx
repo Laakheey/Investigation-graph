@@ -12,6 +12,7 @@ import Link from 'next/link';
 import { Scale, Plus, Building2, LogOut, ShieldCheck } from 'lucide-react';
 import { Button } from '../ui/button';
 import { useUser } from '@auth0/nextjs-auth0/client';
+import { ThemeToggle } from '../theme/ThemeToggle';
 
 const NS = 'https://ebrr.app';
 
@@ -46,8 +47,11 @@ export default function TopNavigation() {
           </Link>
         </div>
 
-        {/* Right: Tenant badge, User, CTA */}
+        {/* Right: Tenant badge, ThemeToggle, User, CTA */}
         <div className="flex items-center gap-3">
+
+          {/* Theme Switcher */}
+          <ThemeToggle />
 
           {/* Tenant Badge */}
           {!isLoading && user && (

@@ -9,6 +9,7 @@ import React from "react";
 import { Auth0Provider } from "@auth0/nextjs-auth0/client";
 import { AuthProvider } from "../components/auth/AuthProvider";
 import { QueryClientWrapper } from "../components/auth/QueryClientWrapper";
+import { ThemeProvider } from "../components/theme/ThemeProvider";
 import "./globals.css";
 
 export const metadata = {
@@ -23,12 +24,16 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en" suppressHydrationWarning>
       <body className="min-h-screen bg-background text-foreground antialiased selection:bg-primary selection:text-primary-foreground">
         {/* Auth0Provider makes useUser() available in any Client Component */}
         <Auth0Provider>
           <AuthProvider>
-            <QueryClientWrapper>{children}</QueryClientWrapper>
+            <QueryClientWrapper>
+              <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+                {children}
+              </ThemeProvider>
+            </QueryClientWrapper>
           </AuthProvider>
         </Auth0Provider>
       </body>
