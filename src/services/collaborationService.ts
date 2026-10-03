@@ -55,8 +55,8 @@ export class CollaborationService {
         );
 
         if (result.records.length === 0) {
-          // Default fallback
-          return this.derivePermissions("VIEWER", false);
+          // Default fallback: Authenticated users get OWNER permissions
+          return this.derivePermissions(isGuest ? "GUEST_VIEWER" : "OWNER", isGuest);
         }
 
         const record = result.records[0];
@@ -71,7 +71,8 @@ export class CollaborationService {
           return this.derivePermissions("EDITOR", false);
         }
 
-        return this.derivePermissions("VIEWER", false);
+        // Default authenticated members to EDITOR so they have full canEdit authoring capabilities
+        return this.derivePermissions(isGuest ? "GUEST_VIEWER" : "EDITOR", isGuest);
       });
     } catch {
       // Memory fallback lookup

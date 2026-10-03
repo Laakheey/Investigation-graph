@@ -2,56 +2,67 @@
 // Next.js Middleware — Auth0 v4 Route Protection & Guest Demo Gatekeeper
 // =============================================================================
 
-import { NextResponse } from 'next/server';
-import type { NextRequest } from 'next/server';
-import { auth0 } from './lib/auth0';
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+import { auth0 } from "./lib/auth0";
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const method = request.method;
 
   // Let Auth0 SDK handle its internal routes (/auth/login, /auth/callback, /auth/logout)
-  if (pathname.startsWith('/auth/')) {
+  if (pathname.startsWith("/auth/")) {
     return await auth0.middleware(request);
   }
 
   // ── 1. Mutation API Guard ───────────────────────────────────────────────────
   // All POST/PUT/DELETE/PATCH mutations on /api/* require authenticated sessions.
-  const isMutation = ['POST', 'PUT', 'DELETE', 'PATCH'].includes(method);
-  const isApiRoute = pathname.startsWith('/api/');
+  const isMutation = ["POST", "PUT", "DELETE", "PATCH"].includes(method);
+  const isApiRoute = pathname.startsWith("/api/");
 
   // Public health check exception
-  if (pathname === '/api/health') {
+  if (pathname === "/api/health") {
     return NextResponse.next();
   }
 
-  // Check for Auth0 session cookie or Bearer token
-  const hasSession =
-    request.cookies.has('appSession') ||
-    request.cookies.has('auth0.is.authenticated') ||
-    request.headers.has('authorization');
+  // Resolve verified Auth0 session (handles chunked cookies, decryption, token verification)
+  let session = null;
+  try {
+    session = await auth0.getSession(request);
+  } catch (err) {
+    console.error("[middleware] Auth0 session resolution error:", err);
+  }
 
-  if (isApiRoute && isMutation && !hasSession) {
+  const isAuthenticated = Boolean(session?.user) || request.headers.has("authorization");
+
+  if (isApiRoute && isMutation && !isAuthenticated) {
     return NextResponse.json(
       {
         success: false,
         error: {
-          code: 'AUTH_REQUIRED',
-          message: 'Sign in to create or edit data.',
+          code: "AUTH_REQUIRED",
+          message: "Sign in to create or edit data.",
         },
       },
-      { status: 401 }
+      { status: 401 },
     );
   }
 
   // ── 2. Read Route Gatekeeping (ALLOW_GUEST_READ) ────────────────────────────
-  const allowGuestRead = process.env.ALLOW_GUEST_READ === 'true' || process.env.NODE_ENV === 'development';
+  const allowGuestRead =
+    process.env.ALLOW_GUEST_READ === "true" ||
+    process.env.NODE_ENV === "development";
 
-  if (!allowGuestRead && !hasSession) {
+  if (!allowGuestRead && !isAuthenticated) {
     // If guest read is disabled and user has no session, redirect to login
-    if (!isApiRoute && pathname !== '/login' && pathname !== '/signup' && pathname !== '/') {
-      const loginUrl = new URL('/auth/login', request.url);
-      loginUrl.searchParams.set('returnTo', pathname);
+    if (
+      !isApiRoute &&
+      pathname !== "/login" &&
+      pathname !== "/signup" &&
+      pathname !== "/"
+    ) {
+      const loginUrl = new URL("/auth/login", request.url);
+      loginUrl.searchParams.set("returnTo", pathname);
       return NextResponse.redirect(loginUrl);
     }
   }
@@ -68,6 +79,6 @@ export const config = {
      * - _next/image (image optimization files)
      * - favicon.ico, sitemap.xml, robots.txt (metadata files)
      */
-    '/((?!_next/static|_next/image|favicon\\.ico|sitemap\\.xml|robots\\.txt).*)',
+    "/((?!_next/static|_next/image|favicon\\.ico|sitemap\\.xml|robots\\.txt).*)",
   ],
 };

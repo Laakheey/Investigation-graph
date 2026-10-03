@@ -17,7 +17,7 @@ const FlowCanvasDynamic = dynamic<FlowCanvasImplProps>(
   {
     ssr: false,
     loading: () => (
-      <div className="flex h-full w-full flex-col items-center justify-center bg-[#0A0D14] text-muted-foreground">
+      <div className="flex h-full w-full flex-col items-center justify-center bg-background text-muted-foreground">
         <div className="relative mb-4 flex items-center justify-center">
           <div className="absolute h-16 w-16 animate-ping rounded-full bg-primary/20" />
           <div className="relative flex h-14 w-14 items-center justify-center rounded-2xl bg-card border border-border shadow-2xl">

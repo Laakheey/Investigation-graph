@@ -5,7 +5,8 @@
 @import "@xyflow/react/dist/style.css";
 
 @layer base {
-  :root {
+  :root,
+  .light {
     --background: 210 20% 98%;
     --foreground: 222.2 84% 4.9%;
 

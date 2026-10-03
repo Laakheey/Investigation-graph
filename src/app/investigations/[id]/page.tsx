@@ -32,6 +32,8 @@ import type {
 } from "@/services/graphService";
 import type { Investigation, WorkspacePermissions } from "@/types/domain";
 
+import InvestigationCanvasLoading from "./loading";
+
 export default function InvestigationMatterPage() {
   const params = useParams();
   const router = useRouter();
@@ -51,11 +53,16 @@ export default function InvestigationMatterPage() {
     setError(null);
 
     try {
-      // 1. Fetch Investigation Details
-      const invRes = await fetch(`/api/investigations/${id}`);
-      const invJson = await invRes.json();
-      if (invJson.success && invJson.data) {
-        setInvestigation(invJson.data);
+      // Fetch Investigation Details, Workspace Members, and Visual Graph concurrently
+      const [invResult, memResult, graphResult] = await Promise.allSettled([
+        fetch(`/api/investigations/${id}`).then((r) => r.json()),
+        fetch(`/api/investigations/${id}/members`).then((r) => r.json()),
+        fetch(`/api/graph/${id}`).then((r) => r.json()),
+      ]);
+
+      // 1. Process Investigation Details
+      if (invResult.status === "fulfilled" && invResult.value?.success && invResult.value.data) {
+        setInvestigation(invResult.value.data);
       } else {
         setInvestigation({
           id,
@@ -70,24 +77,15 @@ export default function InvestigationMatterPage() {
         });
       }
 
-      // 2. Fetch Workspace Members & Permissions
-      try {
-        const memRes = await fetch(`/api/investigations/${id}/members`);
-        const memJson = await memRes.json();
-        if (memJson.success && memJson.data?.permissions) {
-          setPermissions(memJson.data.permissions);
-        }
-      } catch {
-        // Ignored in guest fallback
+      // 2. Process Workspace Members & Permissions
+      if (memResult.status === "fulfilled" && memResult.value?.success && memResult.value.data?.permissions) {
+        setPermissions(memResult.value.data.permissions);
       }
 
-      // 3. Fetch React Flow Visual Payload (Redis Cached + Neo4j fallback)
-      const graphRes = await fetch(`/api/graph/${id}`);
-      const graphJson = await graphRes.json();
-
-      if (graphJson.success && graphJson.data) {
-        setNodes(graphJson.data.nodes || []);
-        setEdges(graphJson.data.edges || []);
+      // 3. Process Visual Graph Payload
+      if (graphResult.status === "fulfilled" && graphResult.value?.success && graphResult.value.data) {
+        setNodes(graphResult.value.data.nodes || []);
+        setEdges(graphResult.value.data.edges || []);
       }
     } catch (err: any) {
       console.error("Failed to load investigation graph:", err);
@@ -102,24 +100,12 @@ export default function InvestigationMatterPage() {
   }, [fetchGraphData]);
 
   if (isLoading) {
-    return (
-      <div className="flex h-screen w-screen flex-col bg-[#0A0D14] text-foreground">
-        <TopNavigation />
-        <div className="flex flex-1 items-center justify-center">
-          <div className="flex flex-col items-center gap-3">
-            <RefreshCw className="h-8 w-8 animate-spin text-primary" />
-            <p className="text-xs text-muted-foreground font-medium">
-              Synchronizing matter graph with Neo4j & Redis cache...
-            </p>
-          </div>
-        </div>
-      </div>
-    );
+    return <InvestigationCanvasLoading />;
   }
 
   if (error && !investigation) {
     return (
-      <div className="flex h-screen w-screen flex-col bg-[#0A0D14] text-foreground">
+      <div className="flex h-screen w-screen flex-col bg-background text-foreground">
         <TopNavigation />
         <div className="flex flex-1 flex-col items-center justify-center gap-4 p-6">
           <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-6 text-center max-w-md">
@@ -142,9 +128,9 @@ export default function InvestigationMatterPage() {
   }
 
   return (
-    <div className="flex h-screen w-screen flex-col bg-[#0A0D14] text-foreground overflow-hidden font-sans select-none">
+    <div className="flex h-screen w-screen flex-col bg-background text-foreground overflow-hidden font-sans select-none">
       {/* Top Bar / Sub-Navigation */}
-      <div className="h-12 border-b border-border bg-[#0E131F]/90 backdrop-blur-md px-4 flex items-center justify-between shrink-0 z-30">
+      <div className="h-12 border-b border-border bg-card/90 backdrop-blur-md px-4 flex items-center justify-between shrink-0 z-30">
         <div className="flex items-center gap-3">
           <Link href="/dashboard">
             <Button
@@ -163,7 +149,7 @@ export default function InvestigationMatterPage() {
             <span className="text-xs font-semibold text-foreground truncate max-w-[280px]">
               {investigation?.title || "Matter Workspace"}
             </span>
-            <span className="text-[10px] font-mono uppercase bg-emerald-950/60 text-emerald-400 px-2 py-0.5 rounded border border-emerald-500/30">
+            <span className="text-[10px] font-mono uppercase bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 dark:bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-500/30">
               {investigation?.status || "ACTIVE"}
             </span>
           </div>
@@ -199,7 +185,21 @@ export default function InvestigationMatterPage() {
           investigationStatus={investigation?.status}
           isGuest={isGuest}
           userRole={permissions?.role || user?.role || (isGuest ? "GUEST_VIEWER" : "OWNER")}
-          userPermissions={permissions || undefined}
+          userPermissions={
+            permissions ||
+            (!isGuest
+              ? {
+                  role: user?.role || "OWNER",
+                  canEdit: true,
+                  canAdmin: true,
+                  canInvite: true,
+                  canDelete: true,
+                  canResolveConflicts: true,
+                  isGuest: false,
+                  permissions: ["read:graph", "write:graph", "resolve:conflict"],
+                }
+              : undefined)
+          }
           onRefresh={fetchGraphData}
         />
       </div>

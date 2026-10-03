@@ -3,7 +3,7 @@
 // =============================================================================
 
 import { NextRequest, NextResponse } from "next/server";
-import { getAuthContext, UnauthorizedError } from "@/lib/auth";
+import { getAuthContext, requireAuthenticatedUser, UnauthorizedError } from "@/lib/auth";
 import { CreateInvestigationSchema } from "@/types/api";
 import { investigationServiceSingleton } from "@/services/investigationService";
 import type { ApiResponse } from "@/types/api";
@@ -47,8 +47,13 @@ export async function POST(
   req: NextRequest,
 ): Promise<NextResponse<ApiResponse<Investigation>>> {
   try {
+    console.log("auth", req);
+    
     const auth = await getAuthContext(req);
+    requireAuthenticatedUser(auth);
     const body = await req.json();
+
+    console.log("body", body);
 
     const parsed = CreateInvestigationSchema.safeParse(body);
     if (!parsed.success) {

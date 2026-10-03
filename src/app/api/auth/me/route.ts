@@ -6,6 +6,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAuthContext, UnauthorizedError } from "../../../../lib/auth";
 import type { ApiResponse, AuthContext } from "../../../../types";
 
+export const dynamic = "force-dynamic";
+
 export async function GET(
   req: NextRequest,
 ): Promise<NextResponse<ApiResponse<AuthContext>>> {

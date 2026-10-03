@@ -11,6 +11,7 @@ import TopNavigation from "@/components/investigations/TopNavigation";
 import InvestigationCard from "@/components/investigations/InvestigationCard";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import type { Investigation } from "@/types/domain";
 
 export default function InvestigationsDashboardPage() {
@@ -32,7 +33,7 @@ export default function InvestigationsDashboardPage() {
       setIsLoading(false);
     }
   };
-
+  
   useEffect(() => {
     fetchInvestigations();
   }, []);
@@ -86,16 +87,40 @@ export default function InvestigationsDashboardPage() {
             >
               <RefreshCw className="h-3.5 w-3.5" />
             </Button>
+            <Link href="/investigations/new">
+              <Button
+                size="sm"
+                className="h-8 gap-1.5 text-xs bg-[#1E3A8A] hover:bg-[#1E40AF] text-white shrink-0 font-medium"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">New Investigation</span>
+              </Button>
+            </Link>
           </div>
         </div>
 
         {/* Loading State */}
         {isLoading ? (
-          <div className="py-20 text-center flex flex-col items-center justify-center space-y-3">
-            <div className="h-6 w-6 rounded-full border-2 border-primary border-t-transparent animate-spin" />
-            <p className="text-xs text-muted-foreground">
-              Loading EBRR investigations...
-            </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+            {[1, 2, 3, 4, 5, 6].map((i) => (
+              <div
+                key={i}
+                className="flex flex-col justify-between rounded-xl border border-border/80 bg-card p-5 shadow-sm space-y-4"
+              >
+                <div className="space-y-3">
+                  <div className="flex items-start justify-between">
+                    <Skeleton className="h-5 w-2/3 rounded" />
+                    <Skeleton className="h-5 w-20 rounded-full" />
+                  </div>
+                  <Skeleton className="h-4 w-full rounded" />
+                  <Skeleton className="h-4 w-4/5 rounded" />
+                </div>
+                <div className="pt-3 border-t border-border/60 flex items-center justify-between">
+                  <Skeleton className="h-4 w-36 rounded" />
+                  <Skeleton className="h-4 w-4 rounded" />
+                </div>
+              </div>
+            ))}
           </div>
         ) : (
           /* Responsive Matters Grid */
